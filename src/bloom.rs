@@ -63,6 +63,7 @@ impl BloomFilter {
     }
 
     /// Check if the filter is empty (all zeros = no inserts).
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.bits.iter().all(|&b| b == 0)
     }

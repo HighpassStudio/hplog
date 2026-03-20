@@ -158,7 +158,7 @@ fn cmd_write(output: &str, block_window: u64) -> Result<()> {
             Ok(()) => lines += 1,
             Err(_) => errors += 1,
         }
-        if lines % 100_000 == 0 && lines > 0 {
+        if lines > 0 && lines.is_multiple_of(100_000) {
             eprint!("\r[hplog] {} lines written...", lines);
         }
     }
@@ -191,7 +191,6 @@ fn cmd_pipe(output: &str, block_window: u64) -> Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut stdout_lock = stdout.lock();
-    let mut lines = 0u64;
     let mut errors = 0u64;
 
     for line in stdin.lock().lines() {
@@ -207,9 +206,8 @@ fn cmd_pipe(output: &str, block_window: u64) -> Result<()> {
         let _ = stdout_lock.write_all(b"\n");
 
         // Also write to .hplog
-        match w.write_json_line(trimmed) {
-            Ok(()) => lines += 1,
-            Err(_) => errors += 1,
+        if w.write_json_line(trimmed).is_err() {
+            errors += 1;
         }
     }
 

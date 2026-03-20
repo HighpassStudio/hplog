@@ -14,6 +14,7 @@ pub const BLOCK_HEADER_SIZE: usize = 100; // 36 header + 64 bloom filter
 pub const FOOTER_SIZE: usize = 24; // magic(8) + index_offset(8) + checksum(4) + reserved(4)
 
 pub const VERSION: u16 = 1;
+#[allow(dead_code)]
 pub const DEFAULT_BLOCK_WINDOW_SECS: u64 = 30;
 pub const ZSTD_LEVEL: i32 = 3;
 

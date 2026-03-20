@@ -170,7 +170,7 @@ impl LxfWriter {
         self.flush_block()?;
 
         // Write dictionary (compressed)
-        let dict_offset = self.bytes_written;
+        let _dict_offset = self.bytes_written;
         let dict_bytes = self.dict.to_bytes();
         let dict_compressed = block::compress_block(&dict_bytes)?;
         let dict_len = dict_compressed.len() as u32;
@@ -347,6 +347,7 @@ fn json_to_field_value(val: &serde_json::Value) -> FieldValue {
     }
 }
 
+#[allow(dead_code)]
 pub struct WriterStats {
     pub total_entries: u64,
     pub block_count: u32,

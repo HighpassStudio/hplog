@@ -5,6 +5,7 @@ use crate::format::LogEntry;
 use anyhow::{bail, Result};
 
 /// A parsed query filter: field_id + expected value string.
+#[allow(dead_code)]
 pub struct Filter {
     pub field_id: u16,
     pub field_name: String,
@@ -41,6 +42,7 @@ pub fn parse_filters(query: &str, dict: &Dictionary) -> Result<Vec<Filter>> {
 }
 
 /// Check if a log entry matches all filters.
+#[allow(dead_code)]
 pub fn entry_matches(entry: &LogEntry, filters: &[Filter]) -> bool {
     for filter in filters {
         let mut found = false;

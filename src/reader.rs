@@ -14,6 +14,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 pub struct LxfReader {
     file: File,
+    #[allow(dead_code)]
     pub header: FileHeader,
     pub dict: Dictionary,
     pub index: Vec<IndexEntry>,
@@ -85,6 +86,7 @@ impl LxfReader {
     }
 
     /// Read block header + bloom filter without decompressing the payload.
+    #[allow(dead_code)]
     fn read_block_header(&mut self, idx: usize) -> Result<(BlockHeader, BloomFilter)> {
         let ie = &self.index[idx];
         self.file.seek(SeekFrom::Start(ie.byte_offset))?;
@@ -92,6 +94,7 @@ impl LxfReader {
     }
 
     /// Read and decompress a single block by index position.
+    #[allow(dead_code)]
     pub fn read_block(&mut self, idx: usize) -> Result<(BlockHeader, Vec<LogEntry>)> {
         let ie = &self.index[idx];
         self.file.seek(SeekFrom::Start(ie.byte_offset))?;

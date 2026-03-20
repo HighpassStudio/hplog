@@ -1,7 +1,8 @@
 //! HPLOG binary format constants and core structs.
 
-use std::io::{Read, Write};
+use crate::bloom::BloomFilter;
 use anyhow::{bail, Result};
+use std::io::{Read, Write};
 
 // Magic bytes
 pub const FILE_MAGIC: &[u8; 4] = b"HPLG";
@@ -9,7 +10,7 @@ pub const INDEX_MAGIC: &[u8; 8] = b"HPLG_IDX";
 pub const FOOTER_MAGIC: &[u8; 8] = b"HPLG_END";
 
 pub const FILE_HEADER_SIZE: usize = 64;
-pub const BLOCK_HEADER_SIZE: usize = 36;
+pub const BLOCK_HEADER_SIZE: usize = 100; // 36 header + 64 bloom filter
 pub const FOOTER_SIZE: usize = 24; // magic(8) + index_offset(8) + checksum(4) + reserved(4)
 
 pub const VERSION: u16 = 1;
@@ -105,7 +106,7 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
-    pub fn write_to<W: Write>(&self, w: &mut W) -> Result<()> {
+    pub fn write_to<W: Write>(&self, w: &mut W, bloom: &BloomFilter) -> Result<()> {
         w.write_all(&self.block_id.to_le_bytes())?;
         w.write_all(&self.time_start.to_le_bytes())?;
         w.write_all(&self.time_end.to_le_bytes())?;
@@ -113,10 +114,11 @@ impl BlockHeader {
         w.write_all(&self.compressed_size.to_le_bytes())?;
         w.write_all(&self.uncompressed_size.to_le_bytes())?;
         w.write_all(&self.checksum.to_le_bytes())?;
+        bloom.write_to(w)?;
         Ok(())
     }
 
-    pub fn read_from<R: Read>(r: &mut R) -> Result<Self> {
+    pub fn read_from<R: Read>(r: &mut R) -> Result<(Self, BloomFilter)> {
         let mut buf4 = [0u8; 4];
         let mut buf8 = [0u8; 8];
 
@@ -141,15 +143,20 @@ impl BlockHeader {
         r.read_exact(&mut buf4)?;
         let checksum = u32::from_le_bytes(buf4);
 
-        Ok(BlockHeader {
-            block_id,
-            time_start,
-            time_end,
-            entry_count,
-            compressed_size,
-            uncompressed_size,
-            checksum,
-        })
+        let bloom = BloomFilter::read_from(r)?;
+
+        Ok((
+            BlockHeader {
+                block_id,
+                time_start,
+                time_end,
+                entry_count,
+                compressed_size,
+                uncompressed_size,
+                checksum,
+            },
+            bloom,
+        ))
     }
 }
 
@@ -265,7 +272,7 @@ impl FieldValue {
 /// A single log entry with timestamp and fields.
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    pub timestamp: u64, // epoch nanoseconds
+    pub timestamp: u64,                 // epoch nanoseconds
     pub fields: Vec<(u16, FieldValue)>, // (field_id, value)
 }
 

@@ -1,7 +1,7 @@
 //! Field-aware grep — search log entries by field=value filters.
 
-use crate::format::LogEntry;
 use crate::dictionary::Dictionary;
+use crate::format::LogEntry;
 use anyhow::{bail, Result};
 
 /// A parsed query filter: field_id + expected value string.

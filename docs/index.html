@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HPLOG — Query large log files 294x faster</title>
+<meta name="description" content="HPLOG turns JSON logs into indexed, compressed blocks so time-range queries don't scan the entire file. 294x faster than grep + gzip.">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-primary: #0a0f1a;
+  --bg-secondary: #0e1525;
+  --bg-card: #151d2e;
+  --bg-code: #0d1321;
+  --text-primary: #e8edf5;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #34d399;
+  --accent-hover: #2bc48a;
+  --accent-dim: #1a5c3f;
+  --border: #1e293b;
+  --red: #ef4444;
+  --orange: #f59e0b;
+}
+
+html { font-size: 18px; scroll-behavior: smooth; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg-primary); color: var(--text-primary); line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1000px; margin: 0 auto; padding: 0 2rem; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+code, .mono { font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace; }
+
+/* Nav */
+nav { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+nav .container { display: flex; justify-content: space-between; align-items: center; }
+nav .logo { font-weight: 700; font-size: 1.2rem; letter-spacing: -0.5px; }
+nav .links a { margin-left: 1.5rem; color: var(--text-secondary); font-size: 0.85rem; }
+nav .links a:hover { color: var(--text-primary); }
+
+/* Hero */
+.hero { padding: 6rem 0 4rem; text-align: center; }
+.hero h1 { font-size: 2.6rem; line-height: 1.2; letter-spacing: -1px; max-width: 800px; margin: 0 auto; }
+.hero .subline { color: var(--text-secondary); font-size: 1.1rem; margin-top: 1rem; max-width: 600px; margin-left: auto; margin-right: auto; }
+.hero-code { background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem 2rem; margin: 2rem auto; max-width: 600px; text-align: left; font-size: 0.85rem; overflow-x: auto; }
+.hero-code .comment { color: var(--text-muted); }
+.hero-code .cmd { color: var(--accent); }
+.hero-code .time { color: var(--orange); }
+.hero-ctas { margin-top: 2rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+.btn-primary { background: var(--accent); color: #0a0f1a; padding: 0.6rem 1.5rem; border-radius: 6px; font-weight: 600; font-size: 0.9rem; }
+.btn-primary:hover { background: var(--accent-hover); color: #0a0f1a; }
+.btn-outline { border: 1px solid var(--border); color: var(--text-secondary); padding: 0.6rem 1.5rem; border-radius: 6px; font-size: 0.9rem; }
+.btn-outline:hover { border-color: var(--text-muted); color: var(--text-primary); }
+
+/* Sections */
+section { padding: 5rem 0; }
+section.alt-bg { background: var(--bg-secondary); }
+.section-label { color: var(--accent); text-transform: uppercase; letter-spacing: 2px; font-size: 0.75rem; font-weight: 600; margin-bottom: 0.5rem; }
+.section-title { font-size: 1.8rem; letter-spacing: -0.5px; margin-bottom: 1rem; }
+.section-subtitle { color: var(--text-secondary); font-size: 0.95rem; max-width: 700px; margin-bottom: 2rem; }
+
+/* Stats */
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-top: 2rem; }
+.stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 2rem; text-align: center; }
+.stat-number { font-size: 2.5rem; font-weight: 700; color: var(--accent); }
+.stat-label { color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.5rem; }
+.stat-sublabel { color: var(--text-muted); font-size: 0.75rem; margin-top: 0.3rem; }
+
+/* Benchmark table */
+.bench-table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; font-size: 0.85rem; }
+.bench-table th { text-align: left; color: var(--text-muted); font-weight: 500; padding: 0.8rem 1rem; border-bottom: 1px solid var(--border); }
+.bench-table td { padding: 0.8rem 1rem; border-bottom: 1px solid var(--border); }
+.bench-table tr:last-child td { border-bottom: none; }
+.bench-table .fast { color: var(--accent); font-weight: 600; }
+.bench-table .slow { color: var(--text-muted); }
+.table-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; overflow-x: auto; }
+
+/* How it works */
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-top: 2rem; }
+.step { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; }
+.step-num { color: var(--accent); font-weight: 700; font-size: 1.2rem; margin-bottom: 0.5rem; }
+.step h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+.step p { color: var(--text-secondary); font-size: 0.85rem; }
+
+/* Code block */
+.code-block { background: var(--bg-code); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-top: 1.5rem; font-size: 0.85rem; overflow-x: auto; white-space: pre; }
+
+/* Footer */
+footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted); font-size: 0.8rem; }
+
+@media (max-width: 768px) {
+  .hero h1 { font-size: 1.8rem; }
+  .stats-grid, .steps { grid-template-columns: 1fr; }
+  section { padding: 3rem 0; }
+  nav .links a { margin-left: 0.8rem; }
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="logo">HPLOG</div>
+    <div class="links">
+      <a href="#benchmark">Benchmark</a>
+      <a href="#how">How It Works</a>
+      <a href="#start">Get Started</a>
+      <a href="https://github.com/HighpassStudio/hplog">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="container">
+    <h1>Stop grepping 10&nbsp;GB&nbsp;logs.<br>Jump to the 5-minute window you need.</h1>
+    <p class="subline">HPLOG indexes your JSON logs so time-range queries don't scan the entire file. No infrastructure. Just a CLI.</p>
+
+    <div class="hero-code mono">
+<span class="comment"># Pipe your existing app — nothing else changes</span>
+<span class="cmd">node app.js | hplog pipe -o app.hplog</span>
+
+<span class="comment"># Find all errors in a 5-minute window from 10 GB of logs</span>
+<span class="cmd">hplog grep app.hplog "level=ERROR" --from 14:30 --to 14:35</span>
+<span class="time"># → 93 ms  (grep + gzip: 27 seconds)</span>
+    </div>
+
+    <div class="hero-ctas">
+      <a href="https://github.com/HighpassStudio/hplog/releases" class="btn-primary">Download Binary</a>
+      <a href="https://github.com/HighpassStudio/hplog" class="btn-outline">View Source</a>
+    </div>
+  </div>
+</section>
+
+<!-- KEY NUMBERS -->
+<section id="benchmark" class="alt-bg">
+  <div class="container">
+    <p class="section-label">Performance</p>
+    <h2 class="section-title">294x faster time-range queries</h2>
+    <p class="section-subtitle">10 GB of JSON logs. 30 million entries. 24 hours of production data.</p>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-number mono">294x</div>
+        <div class="stat-label">Faster than grep + gzip</div>
+        <div class="stat-sublabel">93 ms vs 27,297 ms on 5-min window</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number mono">86%</div>
+        <div class="stat-label">Smaller than raw JSON</div>
+        <div class="stat-sublabel">9.3 GB → 1.3 GB (.hplog)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number mono">0</div>
+        <div class="stat-label">Infrastructure required</div>
+        <div class="stat-sublabel">Single binary. Just a file on disk.</div>
+      </div>
+    </div>
+
+    <div class="table-card" style="margin-top: 2rem;">
+      <table class="bench-table">
+        <thead>
+          <tr><th>Query window</th><th>grep + gzip</th><th>hplog</th><th>Speedup</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>5 minutes</td><td class="slow">27,297 ms</td><td class="fast">93 ms</td><td class="fast">294x</td></tr>
+          <tr><td>15 minutes</td><td class="slow">27,297 ms</td><td class="fast">300 ms</td><td class="fast">91x</td></tr>
+          <tr><td>60 minutes</td><td class="slow">27,297 ms</td><td class="fast">3,200 ms</td><td class="fast">8.5x</td></tr>
+          <tr><td>Full scan</td><td class="slow">27,297 ms</td><td>22,000 ms</td><td>~1x</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="container">
+    <p class="section-label">Architecture</p>
+    <h2 class="section-title">Block-indexed, not sequentially scanned</h2>
+    <p class="section-subtitle">HPLOG groups entries into 30-second time-windowed blocks, compresses each with zstd, and writes a block index at the end.</p>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Read the index</h3>
+        <p>24-byte footer → block index. Binary search for blocks matching your time range. Kilobytes of I/O.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Skip irrelevant blocks</h3>
+        <p>Bloom filters on each block let hplog skip blocks that definitely don't contain your value. No decompression needed.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Decompress in parallel</h3>
+        <p>Only matching blocks are decompressed, in parallel across CPU cores. Filter entries by field value — not raw text matching.</p>
+      </div>
+    </div>
+
+    <div class="code-block mono">
++────────────+────────────+─────────+─────────+─────+─────────+───────+────────+
+│ FileHeader │ Dictionary │ Block 1 │ Block 2 │ ... │ Block N │ Index │ Footer │
+│  (64 B)    │  (var)     │  (var)  │  (var)  │     │  (var)  │ (var) │ (24 B) │
++────────────+────────────+─────────+─────────+─────+─────────+───────+────────+
+
+grep scans ████████████████████████████████████████████ every byte
+hplog reads ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ only what you need</div>
+  </div>
+</section>
+
+<!-- WHY NOT GREP -->
+<section class="alt-bg">
+  <div class="container">
+    <p class="section-label">The Problem</p>
+    <h2 class="section-title">grep scans everything. Every time.</h2>
+    <p class="section-subtitle">On a 10 GB log file, <code>grep ERROR</code> reads all 10 GB of data — even if the error happened at 2:32pm and you know it. And it matches "ERROR" in URLs, stack traces, and message text, not just the <code>level</code> field.</p>
+    <p class="section-subtitle" style="margin-top: 1rem;">HPLOG reads the index, jumps to the right 30-second block, and checks the <code>level</code> field specifically. The rest of the file is never touched.</p>
+  </div>
+</section>
+
+<!-- GET STARTED -->
+<section id="start">
+  <div class="container">
+    <p class="section-label">Get Started</p>
+    <h2 class="section-title">One command. Zero pipeline changes.</h2>
+
+    <div class="code-block mono"><span style="color: var(--text-muted)"># Install</span>
+curl -L https://github.com/HighpassStudio/hplog/releases/latest/download/hplog-linux-x86_64 -o hplog
+chmod +x hplog
+
+<span style="color: var(--text-muted)"># Pipe your existing logs (stdout passes through unchanged)</span>
+node app.js | ./hplog pipe -o app.hplog
+
+<span style="color: var(--text-muted)"># Or convert existing log files</span>
+cat app.log | ./hplog write -o app.hplog
+
+<span style="color: var(--text-muted)"># Query</span>
+./hplog grep app.hplog "level=ERROR" --from 14:30 --to 14:35
+./hplog read app.hplog --from 14:30 --to 14:35
+./hplog stats app.hplog</div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>HPLOG is open source (Apache 2.0) · Built by <a href="https://highpass.studio">Highpass Studio</a></p>
+    <p style="margin-top: 0.5rem;"><a href="https://github.com/HighpassStudio/hplog">GitHub</a> · <a href="https://github.com/HighpassStudio/hplog/blob/main/FORMAT.md">Format Spec</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

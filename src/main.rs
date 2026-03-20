@@ -92,6 +92,17 @@ enum Commands {
         format: String,
     },
 
+    /// Pipe JSON logs: write .hplog AND pass through to stdout (zero-friction adoption)
+    Pipe {
+        /// Output .hplog file path
+        #[arg(short, long)]
+        output: String,
+
+        /// Block time window in seconds (default: 30)
+        #[arg(long, default_value = "30")]
+        block_window: u64,
+    },
+
     /// Show file statistics
     Stats {
         /// Input .hplog file
@@ -121,6 +132,10 @@ fn main() -> Result<()> {
             to,
             format,
         } => cmd_grep(&input, &query, from.as_deref(), to.as_deref(), &format),
+        Commands::Pipe {
+            output,
+            block_window,
+        } => cmd_pipe(&output, block_window),
         Commands::Stats { input } => cmd_stats(&input),
     }
 }
@@ -159,6 +174,52 @@ fn cmd_write(output: &str, block_window: u64) -> Result<()> {
         "[hplog] {} blocks, {} fields, {} in {:.2}s",
         stats.block_count,
         stats.dict_fields,
+        format_size(stats.file_size),
+        elapsed.as_secs_f64()
+    );
+    if errors > 0 {
+        eprintln!("[hplog] {} lines skipped (parse errors)", errors);
+    }
+
+    Ok(())
+}
+
+fn cmd_pipe(output: &str, block_window: u64) -> Result<()> {
+    let t0 = Instant::now();
+    let mut w = writer::LxfWriter::new(output, block_window)?;
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout_lock = stdout.lock();
+    let mut lines = 0u64;
+    let mut errors = 0u64;
+
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Pass through to stdout (the key feature — zero disruption)
+        use std::io::Write;
+        let _ = stdout_lock.write_all(line.as_bytes());
+        let _ = stdout_lock.write_all(b"\n");
+
+        // Also write to .hplog
+        match w.write_json_line(trimmed) {
+            Ok(()) => lines += 1,
+            Err(_) => errors += 1,
+        }
+    }
+
+    let stats = w.finish()?;
+    let elapsed = t0.elapsed();
+
+    eprintln!(
+        "[hplog] Piped {} entries to {} ({}, {:.2}s)",
+        stats.total_entries,
+        output,
         format_size(stats.file_size),
         elapsed.as_secs_f64()
     );

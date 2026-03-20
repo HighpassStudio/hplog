@@ -4,6 +4,7 @@
 //! compresses each block independently, writes tail index on finish.
 
 use crate::block;
+use crate::bloom::BloomFilter;
 use crate::dictionary::Dictionary;
 use crate::format::*;
 use anyhow::{Context, Result};
@@ -106,7 +107,11 @@ impl LxfWriter {
         }
 
         let block_start = self.current_block_start;
-        let block_end = self.current_entries.last().map(|e| e.timestamp).unwrap_or(block_start);
+        let block_end = self
+            .current_entries
+            .last()
+            .map(|e| e.timestamp)
+            .unwrap_or(block_start);
         let entry_count = self.current_entries.len() as u32;
 
         // Serialize entries
@@ -120,7 +125,15 @@ impl LxfWriter {
         // CRC32 of compressed data
         let checksum = crc32fast::hash(&compressed);
 
-        // Write block header
+        // Build bloom filter for this block
+        let mut bloom = BloomFilter::new();
+        for entry in &self.current_entries {
+            for (field_id, value) in &entry.fields {
+                bloom.insert(*field_id, &value.display_string());
+            }
+        }
+
+        // Write block header + bloom filter
         let block_offset = self.bytes_written;
         let header = BlockHeader {
             block_id: self.block_id,
@@ -131,7 +144,7 @@ impl LxfWriter {
             uncompressed_size,
             checksum,
         };
-        header.write_to(&mut self.out)?;
+        header.write_to(&mut self.out, &bloom)?;
         self.bytes_written += BLOCK_HEADER_SIZE as u64;
 
         // Write compressed payload
@@ -307,7 +320,10 @@ fn parse_date_time(date: &str, time: &str) -> u64 {
     }
     days += d - 1;
 
-    let secs = days * 86400 + time_parts[0] as i64 * 3600 + time_parts[1] as i64 * 60 + time_parts[2] as i64;
+    let secs = days * 86400
+        + time_parts[0] as i64 * 3600
+        + time_parts[1] as i64 * 60
+        + time_parts[2] as i64;
     (secs as u64) * 1_000_000_000 + frac_nanos
 }
 

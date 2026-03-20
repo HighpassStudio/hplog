@@ -8,6 +8,7 @@
 //!   hplog stats input.hplog            # file statistics
 
 mod block;
+mod bloom;
 mod dictionary;
 mod format;
 mod query;
@@ -20,7 +21,10 @@ use std::io::{self, BufRead};
 use std::time::Instant;
 
 #[derive(Parser)]
-#[command(name = "hplog", about = "Block-indexed log file format with instant time-range seeking")]
+#[command(
+    name = "hplog",
+    about = "Block-indexed log file format with instant time-range seeking"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -147,7 +151,10 @@ fn cmd_write(output: &str, block_window: u64) -> Result<()> {
     let stats = w.finish()?;
     let elapsed = t0.elapsed();
 
-    eprintln!("\r[hplog] Written {} entries to {}", stats.total_entries, output);
+    eprintln!(
+        "\r[hplog] Written {} entries to {}",
+        stats.total_entries, output
+    );
     eprintln!(
         "[hplog] {} blocks, {} fields, {} in {:.2}s",
         stats.block_count,
@@ -204,37 +211,39 @@ fn cmd_read(input: &str, from: &str, to: &str, fmt: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_grep(input: &str, query_str: &str, from: Option<&str>, to: Option<&str>, fmt: &str) -> Result<()> {
+fn cmd_grep(
+    input: &str,
+    query_str: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    fmt: &str,
+) -> Result<()> {
     let t0 = Instant::now();
     let mut r = reader::LxfReader::open(input)?;
 
     let filters = query::parse_filters(query_str, &r.dict)?;
 
-    let entries = if let (Some(f), Some(t)) = (from, to) {
-        let from_ns = parse_time_arg(f, &r)?;
-        let to_ns = parse_time_arg(t, &r)?;
-        r.read_range(from_ns, to_ns)?
-    } else {
-        r.read_all()?
-    };
+    let from_ns = from.map(|f| parse_time_arg(f, &r)).transpose()?;
+    let to_ns = to.map(|t| parse_time_arg(t, &r)).transpose()?;
 
-    let mut matches = 0u64;
+    let (entries, grep_stats) = r.grep_filtered(&filters, from_ns, to_ns)?;
+
     for entry in &entries {
-        if query::entry_matches(entry, &filters) {
-            match fmt {
-                "json" => println!("{}", r.format_entry_json(entry)),
-                _ => println!("{}", r.format_entry(entry)),
-            }
-            matches += 1;
+        match fmt {
+            "json" => println!("{}", r.format_entry_json(entry)),
+            _ => println!("{}", r.format_entry(entry)),
         }
     }
 
     let elapsed = t0.elapsed();
     eprintln!(
-        "[hplog] {} matches in {:.1}ms (searched {} entries)",
-        matches,
+        "[hplog] {} matches in {:.1}ms ({} blocks: {} in range, {} bloom-skipped, {} decompressed)",
+        entries.len(),
         elapsed.as_secs_f64() * 1000.0,
-        entries.len()
+        grep_stats.total_blocks,
+        grep_stats.range_blocks,
+        grep_stats.bloom_skipped,
+        grep_stats.decompressed_blocks,
     );
 
     Ok(())
@@ -274,7 +283,10 @@ fn parse_time_arg(s: &str, reader: &reader::LxfReader) -> Result<u64> {
             // Use the file's first timestamp to get the date
             let first_ts = reader.index.first().map(|ie| ie.time_start).unwrap_or(0);
             let day_start = (first_ts / 86_400_000_000_000) * 86_400_000_000_000;
-            return Ok(day_start + h * 3_600_000_000_000 + m * 60_000_000_000 + sec * 1_000_000_000);
+            return Ok(day_start
+                + h * 3_600_000_000_000
+                + m * 60_000_000_000
+                + sec * 1_000_000_000);
         }
     }
     // Try full ISO 8601

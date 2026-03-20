@@ -1,0 +1,223 @@
+//! HPLOG reader — opens .hplog files, reads index, supports time-range seeking.
+
+use crate::block;
+use crate::dictionary::Dictionary;
+use crate::format::*;
+use crate::writer::format_timestamp;
+use anyhow::{bail, Context, Result};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+
+pub struct LxfReader {
+    file: File,
+    pub header: FileHeader,
+    pub dict: Dictionary,
+    pub index: Vec<IndexEntry>,
+    pub file_size: u64,
+}
+
+impl LxfReader {
+    pub fn open(path: &str) -> Result<Self> {
+        let mut file = File::open(path).with_context(|| format!("Cannot open {}", path))?;
+        let file_size = file.metadata()?.len();
+
+        // Read file header
+        let header = FileHeader::read_from(&mut file)?;
+
+        // Read footer (last 24 bytes)
+        if file_size < FOOTER_SIZE as u64 {
+            bail!("File too small for footer");
+        }
+        file.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
+        let mut footer_buf = [0u8; FOOTER_SIZE];
+        file.read_exact(&mut footer_buf)?;
+
+        if &footer_buf[0..8] != FOOTER_MAGIC {
+            bail!("Invalid footer magic");
+        }
+        let index_offset = u64::from_le_bytes(footer_buf[8..16].try_into()?);
+
+        // Read index
+        file.seek(SeekFrom::Start(index_offset))?;
+        let mut magic_buf = [0u8; 8];
+        file.read_exact(&mut magic_buf)?;
+        if &magic_buf != INDEX_MAGIC {
+            bail!("Invalid index magic");
+        }
+
+        let mut buf8 = [0u8; 8];
+        file.read_exact(&mut buf8)?;
+        let block_count = u64::from_le_bytes(buf8) as usize;
+
+        let mut index = Vec::with_capacity(block_count);
+        for _ in 0..block_count {
+            index.push(IndexEntry::read_from(&mut file)?);
+        }
+
+        // Read dictionary (between last block and index)
+        // Dictionary is at dict_offset stored in... we need to find it.
+        // It's written after all blocks, before the index.
+        // The dict starts with a 4-byte compressed length prefix.
+        // We can find it by looking at the end of the last block.
+        let dict_start = if let Some(last_block) = index.last() {
+            last_block.byte_offset + BLOCK_HEADER_SIZE as u64 + last_block.compressed_size as u64
+        } else {
+            FILE_HEADER_SIZE as u64
+        };
+
+        file.seek(SeekFrom::Start(dict_start))?;
+        let mut dict_len_buf = [0u8; 4];
+        file.read_exact(&mut dict_len_buf)?;
+        let dict_compressed_len = u32::from_le_bytes(dict_len_buf) as usize;
+
+        let mut dict_compressed = vec![0u8; dict_compressed_len];
+        file.read_exact(&mut dict_compressed)?;
+        let dict_bytes = block::decompress_block(&dict_compressed)?;
+        let dict = Dictionary::from_bytes(&dict_bytes)?;
+
+        Ok(LxfReader {
+            file,
+            header,
+            dict,
+            index,
+            file_size,
+        })
+    }
+
+    /// Read and decompress a single block by index position.
+    pub fn read_block(&mut self, idx: usize) -> Result<(BlockHeader, Vec<LogEntry>)> {
+        let ie = &self.index[idx];
+        self.file.seek(SeekFrom::Start(ie.byte_offset))?;
+
+        let bh = BlockHeader::read_from(&mut self.file)?;
+
+        let mut compressed = vec![0u8; bh.compressed_size as usize];
+        self.file.read_exact(&mut compressed)?;
+
+        // Verify checksum
+        let checksum = crc32fast::hash(&compressed);
+        if checksum != bh.checksum {
+            bail!(
+                "Block {} checksum mismatch: expected {:08x}, got {:08x}",
+                bh.block_id,
+                bh.checksum,
+                checksum
+            );
+        }
+
+        let raw = block::decompress_block(&compressed)?;
+        let entries = block::deserialize_entries(&raw, bh.time_start)?;
+
+        Ok((bh, entries))
+    }
+
+    /// Read all entries from all blocks.
+    pub fn read_all(&mut self) -> Result<Vec<LogEntry>> {
+        let mut all = Vec::new();
+        for i in 0..self.index.len() {
+            let (_, entries) = self.read_block(i)?;
+            all.extend(entries);
+        }
+        Ok(all)
+    }
+
+    /// Read entries in a time range [from_ns, to_ns].
+    /// Uses binary search on the index for O(log n) block lookup.
+    pub fn read_range(&mut self, from_ns: u64, to_ns: u64) -> Result<Vec<LogEntry>> {
+        let mut result = Vec::new();
+
+        // Find first block that might overlap
+        let start_idx = self
+            .index
+            .partition_point(|ie| ie.time_end < from_ns);
+        // Find last block that might overlap
+        let end_idx = self
+            .index
+            .partition_point(|ie| ie.time_start <= to_ns);
+
+        for i in start_idx..end_idx {
+            let (_, entries) = self.read_block(i)?;
+            for entry in entries {
+                if entry.timestamp >= from_ns && entry.timestamp <= to_ns {
+                    result.push(entry);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Format a log entry as human-readable text.
+    pub fn format_entry(&self, entry: &LogEntry) -> String {
+        let ts = format_timestamp(entry.timestamp);
+        let mut parts = vec![ts];
+        for (field_id, value) in &entry.fields {
+            let name = self
+                .dict
+                .get_name(*field_id)
+                .unwrap_or("?");
+            parts.push(format!("{}={}", name, value.display_string()));
+        }
+        parts.join(" ")
+    }
+
+    /// Format entry as JSON.
+    pub fn format_entry_json(&self, entry: &LogEntry) -> String {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "timestamp".to_string(),
+            serde_json::Value::String(format_timestamp(entry.timestamp)),
+        );
+        for (field_id, value) in &entry.fields {
+            let name = self
+                .dict
+                .get_name(*field_id)
+                .unwrap_or("?")
+                .to_string();
+            let json_val = match value {
+                FieldValue::String(s) => serde_json::Value::String(s.clone()),
+                FieldValue::I64(n) => serde_json::json!(*n),
+                FieldValue::F64(n) => serde_json::json!(*n),
+                FieldValue::Bool(b) => serde_json::Value::Bool(*b),
+                FieldValue::Null => serde_json::Value::Null,
+                FieldValue::Json(s) => {
+                    serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
+                }
+            };
+            obj.insert(name, json_val);
+        }
+        serde_json::to_string(&obj).unwrap_or_default()
+    }
+
+    /// Get file statistics without decompressing blocks.
+    pub fn stats(&self) -> FileStats {
+        let total_compressed: u64 = self.index.iter().map(|ie| ie.compressed_size as u64).sum();
+        let time_range_secs = if !self.index.is_empty() {
+            let first = self.index.first().unwrap().time_start;
+            let last = self.index.last().unwrap().time_end;
+            (last - first) / 1_000_000_000
+        } else {
+            0
+        };
+
+        FileStats {
+            file_size: self.file_size,
+            block_count: self.index.len() as u32,
+            dict_fields: self.dict.len() as u32,
+            total_compressed,
+            time_range_secs,
+            first_ts: self.index.first().map(|ie| ie.time_start).unwrap_or(0),
+            last_ts: self.index.last().map(|ie| ie.time_end).unwrap_or(0),
+        }
+    }
+}
+
+pub struct FileStats {
+    pub file_size: u64,
+    pub block_count: u32,
+    pub dict_fields: u32,
+    pub total_compressed: u64,
+    pub time_range_secs: u64,
+    pub first_ts: u64,
+    pub last_ts: u64,
+}
